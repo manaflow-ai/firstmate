@@ -99,6 +99,10 @@
       "target": "docs/verification/runtime-backends.md"
     },
     {
+      "source": "docs/cmux-tui-backend.md",
+      "target": "docs/verification/runtime-backends.md"
+    },
+    {
       "source": "docs/codex-app-backend.md",
       "target": "docs/verification/runtime-backends.md"
     },
@@ -242,6 +246,10 @@
     },
     {
       "path": "docs/cmux-backend.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/cmux-tui-backend.md",
       "audience": "operator-current"
     },
     {

@@ -1,6 +1,7 @@
 # cmux runtime backend
 
 cmux is an experimental macOS GUI terminal backend.
+The headless Rust multiplexer from the same repository is a separate backend; see [`cmux-tui-backend.md`](cmux-tui-backend.md).
 It provides task workspaces and surfaces while Treehouse continues to provide git worktrees.
 [`configuration.md`](configuration.md#runtime-backend-configbackend--fm_backend) owns shared selection and metadata semantics.
 

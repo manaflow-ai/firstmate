@@ -762,6 +762,49 @@ FM_CMUX_CLAUDE_COMPOSER_LIVE=1 bin/fm-test-run.sh tests/fm-cmux-claude-composer-
 That guard still addresses the worker by task selector, so it no longer reaches the typed submit path and is not a current refresh entry point for this guarantee.
 The portable classifier regression is `tests/fm-backend-cmux.test.sh`.
 
+## cmux-tui
+
+The current compatibility floor is cmux-tui 0.1, and the active live evidence uses 0.1.0 at commit 4471965b12 on macOS aarch64, 2026-08-24.
+Real tests use only an isolated throwaway session (`FM_CMUXTUI_SESSION=fm-tui-test-*`), a scratch `--state` dir, `fm-test-` labels, and an adapter-owned `CMUX_TUI_CONFIG`, and they stop the session they started.
+
+```sh
+cmux-tui --version
+```
+
+Observed version:
+
+```text
+cmux 0.1.0 (4471965b12d19914793f46f96322fff5815da010; ghostty f76c132e526f124fe4aaebd39f516751656844bc)
+```
+
+Current active CLI findings:
+
+| Guarantee | Command shape | Result |
+| --- | --- | --- |
+| Headless session | `server start --session <name> --headless --state <dir>` | Started a dedicated session with a 0700 per-uid socket and no auth handshake. |
+| Create | `workspace create --name <label> --empty --json`, `tab create terminal --workspace <id> --cwd <dir> --json` | Returned typed `ws_`/`term_` ids in `.value`. |
+| Duplicate names | two `workspace create --name <same>` | Both succeeded; uniqueness is not enforced natively. |
+| Fresh read | `terminal <id> screen read --json` before any write | Returned text plus `cursor_row`/`cursor_col`/`cursor_visible`. |
+| Literal send | `terminal <id> write --text <text>` | Left text unsubmitted. |
+| Keys | `terminal <id> keys enter\|escape\|ctrl+c\|ctrl+d\|ctrl+u\|tab\|up\|down` | All accepted; an invalid chord returned typed `validation.invalid`. |
+| Pattern wait | `terminal <id> screen wait --pattern <regex> --timeout-ms 3000` | Returned `matched:true` with the matching line. |
+| Scrollback | `terminal <id> history read --json` | Retained rows were contiguous with the visible screen (last history row immediately preceded the screen's first row) with `next:null` at ~900 rows. |
+| Live cwd | `terminal <id> process show --json` | Reported the top-level shell's cwd as `file://<host>/path` plus child pids. |
+| Frozen subshell cwd counterexample | `env -i /bin/bash --norc` then `cd /usr/local` inside it | The structured cwd stayed at the launch directory while `lsof -a -p <child> -d cwd -Fn` reported `/usr/local`. |
+| Last workspace | `workspace <id> close` on the session's only workspace | Closed it; `workspace list` returned `[]` and `server status` stayed `running`. |
+| Durable ids | `server stop` then `server start --state <same dir>` | `workspace list` and `terminal <id> show` returned the identical `ws_`/`term_` ids, with the terminal running. |
+| Correlation replay | `workspace create --correlation-key <k>` twice | The second call returned `replayed:true` with the original workspace id, including after that workspace was closed - keys must be per-attempt nonces. |
+| Typed errors | close of a missing workspace, invalid key chord | Returned `{code, message, retryable, details}` (`selector.not_found`, `validation.invalid`); an interrupted mutation surfaced `mutation.indeterminate` with an idempotency key. |
+| Agent state | `agent report --terminal <id> --state working --source hook`, `agent list --json` | Rows carry `working\|blocked\|idle\|done\|unknown` per terminal with `updated_at_ms`. |
+| Runtime marker | `env` inside a spawned terminal | `CMUX_TUI_SOCKET` and legacy `CMUX_MUX_SOCKET` point at the session socket, alongside `CMUX_TUI_SESSION_ID`/`CMUX_TUI_TERMINAL_ID`; a session inside a cmux GUI tab also inherits the GUI's `CMUX_WORKSPACE_ID`, which is why detection checks cmux-tui first. |
+
+```sh
+tests/fm-backend-cmux-tui.test.sh
+tests/fm-backend-cmux-tui-smoke.test.sh
+```
+
+The real smoke proves headless session bring-up, create and duplicate refusal, label verification, two-step literal-then-Enter submit, bounded capture with scrollback, cursor-anchored composer classification, hook-fed busy state, structured current-path including the subshell counterexample, last-workspace close, durable-id restart recovery, and guarded exact cleanup of the throwaway session.
+
 ## Codex App host tools
 
 A reusable Desktop host-tool smoke ran on 2026-07-06 against Codex Desktop bundle version 26.623.101652, build 4674, bundle id `com.openai.codex`.
