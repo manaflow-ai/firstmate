@@ -38,6 +38,13 @@ fm_git_identity fmtest fmtest@example.invalid
 
 TMP_ROOT=$(fm_test_tmproot fm-backend-tests)
 
+# The cmux-tui runtime markers would flip every detection assertion below
+# when this suite itself runs inside a cmux-tui terminal, exactly like the
+# per-case TMUX/HERDR_ENV/CMUX_WORKSPACE_ID unsets. Nothing in this suite
+# consumes them, so one global unset keeps every case deterministic; the
+# cmux-tui detection cases themselves live in tests/fm-backend-cmux-tui.test.sh.
+unset CMUX_TUI_SOCKET CMUX_MUX_SOCKET
+
 # fm_backend_detect's cmux fallback (bundle id + process ancestry,
 # docs/cmux-backend.md "Runtime auto-detection") consults uname, lsappinfo,
 # and ps. FAKE_NONDARWIN_BIN pins uname to Linux so the whole fallback is
