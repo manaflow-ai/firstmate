@@ -65,9 +65,13 @@ FM_BACKEND_CONFIG_DIR="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 # spawn-capable; unlike tmux/herdr/zellij it is also the worktree provider.
 # cmux is EXPERIMENTAL and spawn-capable, session-provider-only like
 # herdr/zellij - verified against the real 0.64.17 binary (docs/cmux-backend.md).
+# cmux-tui is EXPERIMENTAL and spawn-capable, session-provider-only, and a
+# DIFFERENT product from cmux: the Rust terminal multiplexer, headless and
+# cross-platform, with a real session layer and durable ids - verified
+# against the real 0.1.0 binary (docs/cmux-tui-backend.md).
 # codex-app remains deliberately absent; see docs/codex-app-backend.md.
-FM_BACKEND_KNOWN="tmux herdr zellij orca cmux"
-FM_BACKEND_SPAWN="tmux herdr zellij orca cmux"
+FM_BACKEND_KNOWN="tmux herdr zellij orca cmux cmux-tui"
+FM_BACKEND_SPAWN="tmux herdr zellij orca cmux cmux-tui"
 
 # fm_backend_list_contains: whitespace-delimited membership without relying on
 # shell word splitting. fm-backend.sh is normally sourced by bash scripts, but
@@ -150,6 +154,28 @@ fm_backend_detect() {
     FM_BACKEND_DETECTED=herdr
     FM_BACKEND_DETECT_SIGNAL=HERDR_ENV
     printf 'herdr'
+    return 0
+  fi
+  # cmux-tui injects CMUX_TUI_SOCKET (and the legacy CMUX_MUX_SOCKET alias)
+  # into every terminal it spawns, alongside CMUX_TUI_SESSION_ID and
+  # CMUX_TUI_TERMINAL_ID (verified live, cmux-tui 0.1.0). It is checked
+  # AFTER tmux/herdr (both can nest inside a cmux-tui terminal, and each
+  # sets its own marker in every nested process, so an inner multiplexer
+  # marker always means that multiplexer is the currently-executing layer)
+  # and BEFORE the cmux GUI markers: a cmux-tui session started inside a
+  # cmux GUI tab inherits the GUI's CMUX_WORKSPACE_ID into its terminals
+  # (verified live), so the inner cmux-tui marker must win over the outer
+  # GUI app's. CMUX_TUI_CONFIG is deliberately NOT a marker: it is a
+  # user-settable override this repo's own adapter exports on every CLI
+  # call, so its presence never reliably means "inside a cmux-tui terminal".
+  if [ -n "${CMUX_TUI_SOCKET:-}" ] || [ -n "${CMUX_MUX_SOCKET:-}" ]; then
+    FM_BACKEND_DETECTED=cmux-tui
+    if [ -n "${CMUX_TUI_SOCKET:-}" ]; then
+      FM_BACKEND_DETECT_SIGNAL=CMUX_TUI_SOCKET
+    else
+      FM_BACKEND_DETECT_SIGNAL=CMUX_MUX_SOCKET
+    fi
+    printf 'cmux-tui'
     return 0
   fi
   if [ -n "${CMUX_WORKSPACE_ID:-}" ]; then
@@ -262,6 +288,9 @@ fm_backend_name() {
     if [ "$detected" = herdr ]; then
       echo "NOTICE: auto-detected herdr runtime (HERDR_ENV=1) - spawning into the EXPERIMENTAL herdr backend. Set config/backend or pass --backend tmux to opt out." >&2
     fi
+    if [ "$detected" = cmux-tui ]; then
+      echo "NOTICE: auto-detected cmux-tui runtime ($FM_BACKEND_DETECT_SIGNAL) - spawning into the EXPERIMENTAL cmux-tui backend. Set config/backend or pass --backend tmux to opt out." >&2
+    fi
     if [ "$detected" = cmux ]; then
       case "$FM_BACKEND_DETECT_SIGNAL" in
         bundle-id) marker="FALLBACK signal __CFBundleIdentifier=$FM_BACKEND_CMUX_BUNDLE_ID; CMUX_WORKSPACE_ID absent, stripped by cmux's bundled claude wrapper" ;;
@@ -314,6 +343,7 @@ fm_backend_required_tools() {  # <backend>
     herdr)  printf '%s' 'herdr jq treehouse' ;;
     zellij) printf '%s' 'zellij jq treehouse' ;;
     cmux)   printf '%s' 'cmux jq treehouse' ;;
+    cmux-tui) printf '%s' 'cmux-tui jq treehouse' ;;
     orca)   printf '%s' 'orca' ;;
     *) return 1 ;;
   esac
@@ -327,6 +357,10 @@ fm_backend_required_tool_available() {  # <backend> <tool>
     cmux:cmux)
       fm_backend_source cmux >/dev/null 2>&1 || return 1
       fm_backend_cmux_bin >/dev/null 2>&1
+      ;;
+    cmux-tui:cmux-tui)
+      fm_backend_source cmux-tui >/dev/null 2>&1 || return 1
+      fm_backend_cmuxtui_bin >/dev/null 2>&1
       ;;
     *) command -v "$tool" >/dev/null 2>&1 ;;
   esac
@@ -523,6 +557,23 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         return 1
       fi
       ;;
+    cmux-tui)
+      [ "$binding" = "$id" ] || {
+        echo "REFUSED: legacy cmux-tui endpoint metadata for task $id lacks an exact task binding; preserving task state." >&2
+        return 1
+      }
+      recorded_session=$(fm_backend_meta_exact_value "$meta" cmuxtui_session) || recorded_session=
+      workspace=$(fm_backend_meta_exact_value "$meta" cmuxtui_workspace_id) || workspace=
+      terminal=$(fm_backend_meta_exact_value "$meta" cmuxtui_terminal_id) || terminal=
+      if [ -z "$recorded_session" ] || [ -z "$workspace" ] || [ -z "$terminal" ] \
+        || [ "$window" != "$workspace:$terminal" ] \
+        || ! fm_backend_endpoint_atom_valid "$recorded_session" \
+        || ! fm_backend_endpoint_atom_valid "$workspace" \
+        || ! fm_backend_endpoint_atom_valid "$terminal"; then
+        echo "REFUSED: cmux-tui endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
+        return 1
+      fi
+      ;;
   esac
   # shellcheck disable=SC2034 # Output globals are consumed by sourcing callers.
   FM_BACKEND_VALIDATED_BACKEND=$backend
@@ -631,6 +682,13 @@ fm_backend_source() {  # <name>
         _FM_BACKEND_CMUX_SOURCED=1
       fi
       ;;
+    cmux-tui)
+      if [ -z "${_FM_BACKEND_CMUXTUI_SOURCED:-}" ]; then
+        # shellcheck source=/dev/null
+        . "$FM_BACKEND_LIB_DIR/backends/cmux-tui.sh" || return 1
+        _FM_BACKEND_CMUXTUI_SOURCED=1
+      fi
+      ;;
   esac
 }
 
@@ -702,6 +760,7 @@ fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
     zellij) fm_backend_zellij_capture "$@" ;;
     orca) fm_backend_orca_capture "$@" ;;
     cmux) fm_backend_cmux_capture "$@" ;;
+    cmux-tui) fm_backend_cmuxtui_capture "$@" ;;
     *) echo "error: no capture implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -717,6 +776,7 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
     zellij) fm_backend_zellij_send_key "$@" ;;
     orca) fm_backend_orca_send_key "$@" ;;
     cmux) fm_backend_cmux_send_key "$@" ;;
+    cmux-tui) fm_backend_cmuxtui_send_key "$@" ;;
     *) echo "error: no send-key implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -734,6 +794,7 @@ fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sl
     zellij) fm_backend_zellij_send_text_submit "$@" ;;
     orca) fm_backend_orca_send_text_submit "$@" ;;
     cmux) fm_backend_cmux_send_text_submit "$@" ;;
+    cmux-tui) fm_backend_cmuxtui_send_text_submit "$@" ;;
     *) echo "error: no send-text implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -752,6 +813,7 @@ fm_backend_kill() {  # <backend> <target>
     zellij) fm_backend_zellij_kill "$@" ;;
     orca) fm_backend_orca_kill "$@" ;;
     cmux) fm_backend_cmux_kill "$@" ;;
+    cmux-tui) fm_backend_cmuxtui_kill "$@" ;;
     *) echo "error: no kill implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -789,6 +851,7 @@ fm_backend_busy_state() {  # <backend> <target>
   fm_backend_source "$backend" || { printf 'unknown'; return 0; }
   case "$backend" in
     herdr) fm_backend_herdr_busy_state "$@" ;;
+    cmux-tui) fm_backend_cmuxtui_busy_state "$@" ;;
     *) printf 'unknown' ;;
   esac
 }
@@ -814,6 +877,7 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
     herdr) fm_backend_herdr_composer_state "$@" ;;
     orca) fm_backend_orca_composer_state "$@" ;;
     cmux) fm_backend_cmux_composer_state "$@" ;;
+    cmux-tui) fm_backend_cmuxtui_composer_state "$@" ;;
     zellij) fm_backend_zellij_composer_state "$@" ;;
     *) printf 'unknown' ;;
   esac
@@ -863,6 +927,10 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
     cmux)
       fm_backend_source cmux || return 1
       fm_backend_cmux_target_ready "$target" "$expected_label"
+      ;;
+    cmux-tui)
+      fm_backend_source cmux-tui || return 1
+      fm_backend_cmuxtui_target_ready "$target" "$expected_label"
       ;;
     *)
       return 1
