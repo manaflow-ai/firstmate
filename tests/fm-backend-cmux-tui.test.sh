@@ -744,6 +744,69 @@ test_current_path_falls_back_to_structured_cwd() {
   pass "fm_backend_cmuxtui_current_path: a childless shell uses the structured cwd with scheme and host stripped"
 }
 
+test_current_path_prefers_native_foreground_cwd() {
+  # cmux-tui >= 0.12.0 (manaflow-ai/cmux#10704): a present, non-null
+  # foreground_cwd is the PTY's foreground process group's live cwd and wins
+  # outright - the child-pid probe must not run even when children exist.
+  local dir fb out
+  dir="$TMP_ROOT/cwd-foreground"; mkdir -p "$dir/responses"
+  cmuxtui_terminal_show_response "$dir" 1 "$TERM_A"
+  printf '{"argv":["/bin/zsh"],"children":[4242],"cwd":"file://somehost/frozen/launch/dir","foreground_cwd":"file://somehost/native/foreground/worktree","executable":"/bin/zsh","pid":100}' \
+    > "$dir/responses/2.out"
+  fb=$(make_cmuxtui_fakebin "$dir")
+  # A booby-trapped lsof: reaching the child-pid probe despite a usable
+  # native field is the regression this case pins against.
+  cat > "$fb/lsof" <<'SH'
+#!/usr/bin/env bash
+printf 'p4242\nfcwd\nn/wrong/probe/answer\n'
+SH
+  chmod +x "$fb/lsof"
+  out=$(run_adapter "$dir" "$fb" "fm_backend_cmuxtui_current_path $TARGET_A")
+  [ "$out" = /native/foreground/worktree ] \
+    || fail "current_path should prefer a present non-null foreground_cwd, scheme and host stripped, got '$out'"
+  pass "fm_backend_cmuxtui_current_path: a present non-null foreground_cwd wins, with the file://<host> prefix stripped"
+}
+
+test_current_path_null_foreground_cwd_falls_back() {
+  # A present-but-null foreground_cwd means that daemon's own lookup failed;
+  # the child-pid probe must still answer.
+  local dir fb out
+  dir="$TMP_ROOT/cwd-foreground-null"; mkdir -p "$dir/responses"
+  cmuxtui_terminal_show_response "$dir" 1 "$TERM_A"
+  printf '{"argv":["/bin/zsh"],"children":[4242],"cwd":"file://somehost/frozen/launch/dir","foreground_cwd":null,"executable":"/bin/zsh","pid":100}' \
+    > "$dir/responses/2.out"
+  fb=$(make_cmuxtui_fakebin "$dir")
+  cat > "$fb/lsof" <<'SH'
+#!/usr/bin/env bash
+printf 'p4242\nfcwd\nn/live/subshell/worktree\n'
+SH
+  chmod +x "$fb/lsof"
+  out=$(run_adapter "$dir" "$fb" "fm_backend_cmuxtui_current_path $TARGET_A")
+  [ "$out" = /live/subshell/worktree ] \
+    || fail "a null foreground_cwd should fall back to the child-pid probe, got '$out'"
+  pass "fm_backend_cmuxtui_current_path: a null foreground_cwd falls back to the child-pid probe"
+}
+
+test_current_path_absent_foreground_cwd_falls_back() {
+  # An absent key is a pre-0.12.0 daemon; the child-pid probe must answer
+  # exactly as before the field existed.
+  local dir fb out
+  dir="$TMP_ROOT/cwd-foreground-absent"; mkdir -p "$dir/responses"
+  cmuxtui_terminal_show_response "$dir" 1 "$TERM_A"
+  printf '{"argv":["/bin/zsh"],"children":[4242],"cwd":"file://somehost/frozen/launch/dir","executable":"/bin/zsh","pid":100}' \
+    > "$dir/responses/2.out"
+  fb=$(make_cmuxtui_fakebin "$dir")
+  cat > "$fb/lsof" <<'SH'
+#!/usr/bin/env bash
+printf 'p4242\nfcwd\nn/live/subshell/worktree\n'
+SH
+  chmod +x "$fb/lsof"
+  out=$(run_adapter "$dir" "$fb" "fm_backend_cmuxtui_current_path $TARGET_A")
+  [ "$out" = /live/subshell/worktree ] \
+    || fail "an absent foreground_cwd (old daemon) should fall back to the child-pid probe, got '$out'"
+  pass "fm_backend_cmuxtui_current_path: an absent foreground_cwd (pre-0.12.0 daemon) falls back to the child-pid probe"
+}
+
 test_current_path_empty_when_target_gone() {
   local dir fb out
   dir="$TMP_ROOT/cwd-gone"; mkdir -p "$dir/responses"
@@ -924,6 +987,9 @@ test_send_text_submit_detects_swallowed_enter
 test_send_text_submit_send_failed_when_target_absent
 test_current_path_prefers_child_pid_cwd
 test_current_path_falls_back_to_structured_cwd
+test_current_path_prefers_native_foreground_cwd
+test_current_path_null_foreground_cwd_falls_back
+test_current_path_absent_foreground_cwd_falls_back
 test_current_path_empty_when_target_gone
 test_busy_state_maps_agent_states
 test_busy_state_unknown_without_agent_row

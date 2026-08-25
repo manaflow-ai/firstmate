@@ -521,17 +521,31 @@ fm_backend_cmuxtui_pid_cwd() {  # <pid>
 
 # fm_backend_cmuxtui_current_path: the live foreground cwd, or empty on any
 # error (mirrors every adapter's tolerant contract for fm-spawn.sh's
-# worktree-discovery poll). Structured, never screen-scraped:
-# `process show --json` gives the top-level shell's cwd (a file://<host>/path
-# URL; strip scheme and host) plus its child pids. The structured cwd stays
-# FROZEN when an integration-free foreground subshell (the `treehouse get`
-# case, finding #5) does its own cd, so child pids are consulted FIRST,
-# newest first, through their OS-level cwd (fm_backend_cmuxtui_pid_cwd); the
-# top-level cwd field is the fallback for a childless plain shell.
+# worktree-discovery poll). Structured, never screen-scraped, three sources
+# in preference order:
+#   1. `process show --json`'s foreground_cwd - the PTY's foreground process
+#      group's live cwd, shipped in cmux-tui 0.12.0 (manaflow-ai/cmux#10704;
+#      macOS proc_pidvnodepathinfo, Linux /proc/<pid>/cwd). Used whenever the
+#      key is present with a non-null value; null means that daemon's own
+#      lookup failed, and an ABSENT key means a pre-0.12.0 daemon - both fall
+#      through to the probes below.
+#   2. The child pids' OS-level cwd (fm_backend_cmuxtui_pid_cwd), newest
+#      first - the pre-0.12.0 answer for a foreground subshell, because the
+#      structured top-level cwd stays FROZEN when an integration-free
+#      foreground subshell (the `treehouse get` case, finding #5) does its
+#      own cd.
+#   3. The top-level cwd field, for a childless plain shell.
+# Both cwd fields are file://<host>/path URLs; scheme and host are stripped
+# identically.
 fm_backend_cmuxtui_current_path() {  # <target> [expected-label]
-  local target=$1 expected_label=${2:-} proc pid p raw
+  local target=$1 expected_label=${2:-} proc fg pid p raw
   fm_backend_cmuxtui_target_ready "$target" "$expected_label" || return 0
   proc=$(fm_backend_cmuxtui_cli terminal "$FM_BACKEND_CMUXTUI_TERMINAL" process show --json 2>/dev/null) || return 0
+  fg=$(printf '%s' "$proc" | jq -r 'if has("foreground_cwd") and (.foreground_cwd != null) then .foreground_cwd else empty end' 2>/dev/null)
+  if [ -n "$fg" ]; then
+    printf '%s' "$fg" | sed -E 's|^file://[^/]*||'
+    return 0
+  fi
   while IFS= read -r pid; do
     [ -n "$pid" ] || continue
     p=$(fm_backend_cmuxtui_pid_cwd "$pid") || continue
