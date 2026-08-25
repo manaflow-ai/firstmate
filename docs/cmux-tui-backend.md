@@ -55,7 +55,8 @@ A hidden cursor drops the cursor fact for that read instead of anchoring on a st
 Captures larger than the viewport append the terminal's retained scrollback from `history read`, which is contiguous with the visible screen.
 
 Worktree-path discovery is structured, never screen-scraped: `process show --json` reports the top-level shell's live cwd (a `file://<host>/path` URL, scheme and host stripped) plus child pids.
-That structured cwd freezes when an integration-free foreground subshell (the `treehouse get` case) changes directory, so child pids are consulted first through their OS-level cwd (`lsof -a -p <pid> -d cwd -Fn` on macOS, `/proc/<pid>/cwd` on Linux).
+On cmux-tui 0.12.0 or newer the same response carries `foreground_cwd`, the PTY's foreground process group's live cwd ([manaflow-ai/cmux#10704](https://github.com/manaflow-ai/cmux/pull/10704)), and the adapter uses it whenever the key is present and non-null, stripped of scheme and host the same way.
+A null `foreground_cwd` (that daemon's own lookup failed) or an absent key (a pre-0.12.0 daemon) falls back to the child-pid probe: the structured top-level cwd freezes when an integration-free foreground subshell (the `treehouse get` case) changes directory, so child pids are consulted through their OS-level cwd (`lsof -a -p <pid> -d cwd -Fn` on macOS, `/proc/<pid>/cwd` on Linux).
 `terminal <id> screen wait --pattern <regex> --timeout-ms <n>` exists as an event-driven output wait for future use.
 
 Mutations go through a wrapper that attaches a per-attempt `--correlation-key` nonce and retries once with the same key on a retryable or `mutation.indeterminate` typed error.
@@ -74,7 +75,7 @@ Real tests spin up their own isolated throwaway session (`FM_CMUXTUI_SESSION=fm-
 - Workspace-name uniqueness is not enforced natively, so the duplicate refusal is the adapter's own and its check-then-create window is inherent.
 - Env markers are ordinary environment variables a wrapper can scrub, like every other backend's markers.
 - A target can disappear between a structural readiness read and the operation.
-- A foreground subshell's cwd needs the child-pid lookup until cmux-tui ships a native foreground-cwd field.
+- A foreground subshell's cwd needs the child-pid lookup on daemons older than cmux-tui 0.12.0, and remains the fallback when 0.12.0's native `foreground_cwd` is null.
 - Agent state is hook-fed, so a harness without installed hooks reports no row and supervision falls back to screen polling.
 - There is no native push-event wait wired into the watcher yet; `screen wait` exists but `fm_backend_has_push` still reports false.
 
